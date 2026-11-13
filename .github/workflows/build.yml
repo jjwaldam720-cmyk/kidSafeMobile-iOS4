@@ -1,0 +1,66 @@
+name: Build IPA
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Unzip Source Code
+        run: |
+          ZIP_FILE=$(find . -maxdepth 1 -name "*.zip" | head -n 1)
+          echo "Found zip: $ZIP_FILE"
+          unzip -q "$ZIP_FILE" -d source_code
+          find source_code -name "._*" -delete
+          rm -rf source_code/__MACOSX
+
+      - name: Install CocoaPods (if needed)
+        run: |
+          PODFILE=$(find source_code -name "Podfile" | head -n 1)
+          if [ -n "$PODFILE" ]; then
+            POD_DIR=$(dirname "$PODFILE")
+            echo "Running pod install in $POD_DIR"
+            cd "$POD_DIR" && pod install
+          fi
+
+      - name: Build Unsigned App
+        run: |
+          PROJECT_FILE=$(find source_code -name "*.xcworkspace" ! -path "*project.xcworkspace*" ! -name "._*" | head -n 1)
+          if [ -z "$PROJECT_FILE" ]; then
+            PROJECT_FILE=$(find source_code -name "*.xcodeproj" ! -name "._*" | head -n 1)
+            BUILD_FLAG="-project"
+          else
+            BUILD_FLAG="-workspace"
+          fi
+
+          echo "Found project: $PROJECT_FILE"
+          BASE_NAME=$(basename "$PROJECT_FILE" | sed 's/\.[^.]*$//')
+
+          SCHEME_NAME=$(xcodebuild $BUILD_FLAG "$PROJECT_FILE" -list -json | python3 -c "import sys, json; data = json.load(sys.stdin); schemes = (data.get('workspace') or data.get('project')).get('schemes', []); print(next((s for s in schemes if s == '$BASE_NAME' or s in ['Median', 'GoNativeIOS']), next((s for s in schemes if 'Generate' not in s and 'Pods' not in s), schemes[0])))")
+
+          echo "Using scheme: $SCHEME_NAME"
+
+          xcodebuild $BUILD_FLAG "$PROJECT_FILE" \
+            -scheme "$SCHEME_NAME" \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="Joseph DEV"
+
+      - name: Package into IPA
+        run: |
+          mkdir -p Payload
+          cp -r build/Build/Products/Release-iphoneos/*.app Payload/
+          zip -r LauncherForKids.ipa Payload
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v5
+        with:
+          name: iOS
+          path: LauncherForKids.ipa
